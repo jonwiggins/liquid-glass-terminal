@@ -25,6 +25,7 @@ private enum ParseState {
 }
 
 /// VT100/xterm compatible terminal parser
+@MainActor
 class VT100Parser {
     private var state: ParseState = .ground
     private var params: [Int] = []
@@ -40,7 +41,6 @@ class VT100Parser {
     private var awaitingStringTerminator: Bool = false
 
     /// Parse data and update terminal state
-    @MainActor
     func parse(_ data: Data, terminal: TerminalState) {
         for byte in data {
             processByte(byte, terminal: terminal)
@@ -106,9 +106,8 @@ class VT100Parser {
             state = .escape
 
         case 0x20...0x7E:  // ASCII printable
-            if let scalar = UnicodeScalar(byte) {
-                terminal.writeChar(Character(scalar))
-            }
+            let scalar = UnicodeScalar(byte)
+            terminal.writeChar(Character(scalar))
 
         case 0x80...0xFF:  // UTF-8 continuation or start
             handleUTF8Byte(byte, terminal)
@@ -656,9 +655,8 @@ class VT100Parser {
             oscString = ""
             awaitingStringTerminator = false
         } else if byte >= 0x20 {
-            if let char = UnicodeScalar(byte) {
-                oscString.append(Character(char))
-            }
+            let char = UnicodeScalar(byte)
+            oscString.append(Character(char))
             awaitingStringTerminator = false
         }
     }

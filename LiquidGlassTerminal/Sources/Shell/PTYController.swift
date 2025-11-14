@@ -31,23 +31,24 @@ enum PTYError: Error, LocalizedError {
 }
 
 /// Manages a pseudo-terminal and shell process
-class PTYController: ObservableObject {
+class PTYController: ObservableObject, @unchecked Sendable {
     // MARK: - Published Properties
 
-    @Published private(set) var isRunning: Bool = false
+    @MainActor @Published private(set) var isRunning: Bool = false
 
     // MARK: - Properties
 
-    private var masterFD: Int32 = -1
-    private var childPID: pid_t = -1
-    private var readSource: DispatchSourceRead?
-    private var processMonitor: DispatchSourceProcess?
+    nonisolated(unsafe) private var internalRunning: Bool = false
+    nonisolated(unsafe) private var masterFD: Int32 = -1
+    nonisolated(unsafe) private var childPID: pid_t = -1
+    nonisolated(unsafe) private var readSource: DispatchSourceRead?
+    nonisolated(unsafe) private var processMonitor: DispatchSourceProcess?
 
     /// Callback for received data
-    var onDataReceived: ((Data) -> Void)?
+    nonisolated(unsafe) var onDataReceived: (@Sendable (Data) -> Void)?
 
     /// Callback for process exit
-    var onProcessExit: ((Int32) -> Void)?
+    nonisolated(unsafe) var onProcessExit: (@Sendable (Int32) -> Void)?
 
     // MARK: - Shell Configuration
 
@@ -80,6 +81,15 @@ class PTYController: ObservableObject {
         for (key, value) in environment {
             env[key] = value
         }
+
+        // Ensure essential terminal environment variables are set
+        if env["TERM"] == nil {
+            env["TERM"] = "xterm-256color"
+        }
+        if env["LANG"] == nil {
+            env["LANG"] = "en_US.UTF-8"
+        }
+
         self.environment = env
 
         // Working directory
@@ -91,28 +101,42 @@ class PTYController: ObservableObject {
     }
 
     deinit {
-        stop()
+        // Can't call async/MainActor methods in deinit
+        // Clean up directly
+        stopMonitoring()
+
+        if childPID > 0 {
+            kill(childPID, SIGTERM)
+            usleep(100_000)
+            var status: Int32 = 0
+            if waitpid(childPID, &status, WNOHANG) == 0 {
+                kill(childPID, SIGKILL)
+                waitpid(childPID, &status, 0)
+            }
+        }
+
+        if masterFD >= 0 {
+            close(masterFD)
+        }
     }
 
     // MARK: - Lifecycle
 
     /// Start the PTY and spawn shell
     func start(rows: Int = 24, cols: Int = 80) throws {
-        guard !isRunning else {
-            throw PTYError.alreadyRunning
-        }
-
         try openPTY()
         try configurePTY(rows: rows, cols: cols)
 
-        isRunning = true
+        internalRunning = true
+        Task { @MainActor in
+            self.isRunning = true
+        }
         startMonitoring()
     }
 
     /// Stop the PTY and terminate shell
     func stop() {
-        guard isRunning else { return }
-
+        internalRunning = false
         stopMonitoring()
 
         // Terminate child process
@@ -138,7 +162,9 @@ class PTYController: ObservableObject {
             masterFD = -1
         }
 
-        isRunning = false
+        Task { @MainActor in
+            self.isRunning = false
+        }
     }
 
     // MARK: - PTY Management
@@ -151,9 +177,11 @@ class PTYController: ObservableObject {
         // Open PTY pair
         let result = openpty(&master, &slave, &slavePath, nil, nil)
         guard result == 0 else {
+            print("❌ openpty failed with result: \(result), errno: \(errno)")
             throw PTYError.openFailed
         }
 
+        print("✅ PTY opened: master=\(master), slave=\(slave)")
         self.masterFD = master
 
         // Set non-blocking I/O on master
@@ -181,63 +209,91 @@ class PTYController: ObservableObject {
     }
 
     private func spawnProcess(slaveFD: Int32) throws {
-        let pid = fork()
+        // Setup file actions for posix_spawn
+        var fileActions: posix_spawn_file_actions_t?
+        posix_spawn_file_actions_init(&fileActions)
+        defer { posix_spawn_file_actions_destroy(&fileActions) }
 
-        if pid == 0 {
-            // Child process
+        // Redirect stdio to slave
+        posix_spawn_file_actions_adddup2(&fileActions, slaveFD, STDIN_FILENO)
+        posix_spawn_file_actions_adddup2(&fileActions, slaveFD, STDOUT_FILENO)
+        posix_spawn_file_actions_adddup2(&fileActions, slaveFD, STDERR_FILENO)
 
-            // Create new session
-            setsid()
+        // Close slave FD in child
+        posix_spawn_file_actions_addclose(&fileActions, slaveFD)
 
-            // Set slave as controlling terminal
-            ioctl(slaveFD, TIOCSCTTY, 0)
+        // Setup spawn attributes
+        var spawnAttrs: posix_spawnattr_t?
+        posix_spawnattr_init(&spawnAttrs)
+        defer { posix_spawnattr_destroy(&spawnAttrs) }
 
-            // Redirect stdio to slave
-            dup2(slaveFD, STDIN_FILENO)
-            dup2(slaveFD, STDOUT_FILENO)
-            dup2(slaveFD, STDERR_FILENO)
+        // Set flags for new session
+        var flags: Int16 = 0
+        #if os(macOS)
+        // POSIX_SPAWN_SETSID is available on macOS 10.15+
+        if #available(macOS 10.15, *) {
+            flags |= Int16(POSIX_SPAWN_SETSID)
+        }
+        flags |= Int16(POSIX_SPAWN_CLOEXEC_DEFAULT)
+        #endif
+        if flags != 0 {
+            posix_spawnattr_setflags(&spawnAttrs, flags)
+        }
 
-            // Close all other file descriptors
-            #if os(macOS) || os(iOS)
-            closefrom(3)
-            #else
-            let maxFD = min(Int(sysconf(_SC_OPEN_MAX)), 256)
-            for fd in 3..<maxFD {
-                close(Int32(fd))
+        // Prepare environment
+        let envVars = environment.map { "\($0.key)=\($0.value)" }
+        var envPointers = envVars.map { strdup($0) }
+        envPointers.append(nil)
+        defer {
+            for ptr in envPointers where ptr != nil {
+                free(ptr)
             }
-            #endif
+        }
 
-            // Set environment variables
-            let envVars = environment.map { "\($0.key)=\($0.value)" }
-            var envPointers = envVars.map { strdup($0) }
-            envPointers.append(nil)
+        // Prepare arguments
+        // argv[0] should be the shell name (with leading '-' for login shell)
+        let shellName = (shellPath as NSString).lastPathComponent
+        let loginShellName = "-" + shellName
+        let argv = [loginShellName] + shellArgs
+        var argvPointers = argv.map { strdup($0) }
+        argvPointers.append(nil)
+        defer {
+            for ptr in argvPointers where ptr != nil {
+                free(ptr)
+            }
+        }
 
-            // Change to working directory
-            chdir(workingDirectory)
+        // Change to working directory (do this before spawn)
+        let originalDir = FileManager.default.currentDirectoryPath
+        FileManager.default.changeCurrentDirectoryPath(workingDirectory)
 
-            // Execute shell
-            let shellName = (shellPath as NSString).lastPathComponent
-            var argv = [shellPath, shellName] + shellArgs
-            var argvPointers = argv.map { strdup($0) }
-            argvPointers.append(nil)
+        // Spawn process
+        var pid: pid_t = 0
+        let result = posix_spawn(
+            &pid,
+            shellPath,
+            &fileActions,
+            &spawnAttrs,
+            argvPointers,
+            envPointers
+        )
 
-            execve(shellPath, &argvPointers, &envPointers)
+        // Restore original directory
+        FileManager.default.changeCurrentDirectoryPath(originalDir)
 
-            // If we get here, exec failed
-            perror("execve failed")
-            _exit(1)
-        } else if pid > 0 {
-            // Parent process
-            self.childPID = pid
-        } else {
+        guard result == 0 else {
+            print("❌ posix_spawn failed with result: \(result), errno: \(errno)")
             throw PTYError.forkFailed
         }
+
+        print("✅ Shell process spawned with PID: \(pid)")
+        self.childPID = pid
     }
 
     // MARK: - I/O Operations
 
     func write(_ data: Data) throws {
-        guard isRunning else {
+        guard internalRunning else {
             throw PTYError.notRunning
         }
 
@@ -269,7 +325,7 @@ class PTYController: ObservableObject {
         try write(data)
     }
 
-    private func read() -> Data? {
+    nonisolated private func read() -> Data? {
         var buffer = [UInt8](repeating: 0, count: 8192)
         let bytesRead = Darwin.read(masterFD, &buffer, buffer.count)
 
@@ -291,7 +347,7 @@ class PTYController: ObservableObject {
     // MARK: - Terminal Control
 
     func resize(rows: Int, cols: Int) throws {
-        guard isRunning else {
+        guard internalRunning else {
             throw PTYError.notRunning
         }
 
@@ -299,7 +355,7 @@ class PTYController: ObservableObject {
     }
 
     func sendSignal(_ signal: Int32) throws {
-        guard isRunning && childPID > 0 else {
+        guard internalRunning && childPID > 0 else {
             throw PTYError.notRunning
         }
 
@@ -320,8 +376,13 @@ class PTYController: ObservableObject {
 
             // Read all available data
             while let data = self.read() {
+                print("📥 PTY received \(data.count) bytes")
+                if let str = String(data: data, encoding: .utf8) {
+                    print("📥 Data: '\(str)'")
+                }
+                let callback = self.onDataReceived
                 DispatchQueue.main.async {
-                    self.onDataReceived?(data)
+                    callback?(data)
                 }
             }
         }
@@ -347,8 +408,9 @@ class PTYController: ObservableObject {
             processMonitor?.setEventHandler { [weak self] in
                 guard let self = self else { return }
 
+                let pid = self.childPID
                 var status: Int32 = 0
-                waitpid(self.childPID, &status, 0)
+                waitpid(pid, &status, 0)
 
                 let exitCode: Int32
                 if WIFEXITED(status) {
@@ -357,9 +419,10 @@ class PTYController: ObservableObject {
                     exitCode = -1
                 }
 
-                DispatchQueue.main.async {
-                    self.isRunning = false
-                    self.onProcessExit?(exitCode)
+                let callback = self.onProcessExit
+                Task { @MainActor [weak self] in
+                    self?.isRunning = false
+                    callback?(exitCode)
                 }
             }
 
@@ -367,7 +430,7 @@ class PTYController: ObservableObject {
         }
     }
 
-    private func stopMonitoring() {
+    nonisolated private func stopMonitoring() {
         readSource?.cancel()
         readSource = nil
 

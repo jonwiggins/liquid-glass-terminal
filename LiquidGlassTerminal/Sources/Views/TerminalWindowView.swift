@@ -32,6 +32,12 @@ struct TerminalWindowView: View {
         .frame(minWidth: 600, minHeight: 400)
         .onAppear {
             startSession()
+
+            // Ensure app is activated when window appears
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                NSApp.activate(ignoringOtherApps: true)
+                print("🔥 Re-activated app from onAppear")
+            }
         }
         .onDisappear {
             session.stop()
@@ -41,8 +47,12 @@ struct TerminalWindowView: View {
     private func startSession() {
         do {
             try session.start()
+            print("✅ Terminal session started successfully")
         } catch {
-            print("Failed to start terminal session: \(error)")
+            print("❌ Failed to start terminal session: \(error)")
+            if let ptyError = error as? PTYError {
+                print("   Error details: \(ptyError.localizedDescription)")
+            }
         }
     }
 }

@@ -7,14 +7,22 @@
 
 import SwiftUI
 import AppKit
+import Combine
 
 /// SwiftUI view for terminal display
 struct TerminalView: View {
     @ObservedObject var session: TerminalSession
+    @FocusState private var isFocused: Bool
 
     var body: some View {
         TerminalNSViewWrapper(session: session)
             .background(Color.clear)
+            .onAppear {
+                // Try to claim focus when view appears
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    isFocused = true
+                }
+            }
     }
 }
 
@@ -26,11 +34,25 @@ struct TerminalNSViewWrapper: NSViewRepresentable {
         let view = TerminalNSView(session: session)
         view.wantsLayer = true
         view.layer?.isOpaque = false
+
+        // Ensure the view can receive keyboard events
+        DispatchQueue.main.async {
+            view.window?.makeFirstResponder(view)
+        }
+
         return view
     }
 
     func updateNSView(_ nsView: TerminalNSView, context: Context) {
         nsView.setNeedsDisplay(nsView.bounds)
+
+        // Re-assert first responder status on update
+        DispatchQueue.main.async {
+            if nsView.window?.firstResponder != nsView {
+                print("🔄 View lost first responder, reclaiming...")
+                nsView.window?.makeFirstResponder(nsView)
+            }
+        }
     }
 }
 
@@ -39,6 +61,7 @@ class TerminalNSView: NSView {
     private let session: TerminalSession
     private var renderer: TerminalRenderer
     private var trackingArea: NSTrackingArea?
+    private var cancellables = Set<AnyCancellable>()
 
     // MARK: - Initialization
 
@@ -67,13 +90,50 @@ class TerminalNSView: NSView {
         acceptsTouchEvents = true
     }
 
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+
+        // Automatically become first responder when added to window
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, let window = self.window else { return }
+
+            // Make window key and bring to front
+            window.makeKeyAndOrderFront(nil)
+
+            // Make this view first responder
+            let success = window.makeFirstResponder(self)
+            print("🎯 makeFirstResponder success: \(success)")
+            print("🎯 Current first responder: \(String(describing: window.firstResponder))")
+            print("🎯 Window is key: \(window.isKeyWindow)")
+        }
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        print("🎯 becomeFirstResponder called")
+        return super.becomeFirstResponder()
+    }
+
     private func setupObservers() {
         // Observe terminal state changes
-        session.terminalState.objectWillChange.sink { [weak self] _ in
-            DispatchQueue.main.async {
-                self?.needsDisplay = true
+        session.terminalState.objectWillChange
+            .sink { [weak self] _ in
+                print("🔔 TerminalState changed, triggering redraw")
+                DispatchQueue.main.async {
+                    self?.needsDisplay = true
+                    print("🔔 needsDisplay = true")
+                }
             }
-        }
+            .store(in: &cancellables)
+
+        // Also observe the Published properties directly
+        session.terminalState.$size
+            .sink { [weak self] newSize in
+                print("🔔 Terminal size changed: \(newSize)")
+                DispatchQueue.main.async {
+                    self?.needsDisplay = true
+                }
+            }
+            .store(in: &cancellables)
     }
 
     // MARK: - Layout
@@ -84,8 +144,8 @@ class TerminalNSView: NSView {
 
         // Resize terminal to fit view
         let newSize = renderer.terminalSize(for: bounds.size)
-        if newSize != session.terminalState.size {
-            Task { @MainActor in
+        Task { @MainActor in
+            if newSize != session.terminalState.size {
                 session.resize(to: newSize)
             }
         }
@@ -114,16 +174,21 @@ class TerminalNSView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
+        print("🎨 draw() called, dirtyRect: \(dirtyRect)")
 
-        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        guard let context = NSGraphicsContext.current?.cgContext else {
+            print("🎨 No graphics context!")
+            return
+        }
 
         // Clear background (transparent for glass effect)
         context.clear(bounds)
 
-        // Render terminal
-        Task { @MainActor in
+        // Render terminal - must be synchronous in draw method
+        MainActor.assumeIsolated {
             renderer.draw(in: context, rect: dirtyRect)
         }
+        print("🎨 draw() complete")
     }
 
     override var isFlipped: Bool {
@@ -133,7 +198,10 @@ class TerminalNSView: NSView {
     // MARK: - Mouse Events
 
     override func mouseDown(with event: NSEvent) {
-        window?.makeFirstResponder(self)
+        print("🖱️ mouseDown - making first responder")
+        window?.makeKeyAndOrderFront(nil)
+        let success = window?.makeFirstResponder(self)
+        print("🖱️ makeFirstResponder success: \(success ?? false)")
         // TODO: Implement selection start
     }
 
@@ -148,15 +216,29 @@ class TerminalNSView: NSView {
     // MARK: - Keyboard Events
 
     override var acceptsFirstResponder: Bool {
+        print("🎯 acceptsFirstResponder called, returning true")
         return true
     }
 
     override func keyDown(with event: NSEvent) {
-        guard let characters = event.characters else { return }
+        print("⌨️ keyDown received! characters: \(event.characters ?? "nil")")
+        guard let characters = event.characters else {
+            print("⌨️ No characters in event")
+            return
+        }
 
+        print("⌨️ Sending '\(characters)' to terminal")
         Task {
             await session.sendInput(characters)
         }
+    }
+
+    override var canBecomeKeyView: Bool {
+        return true
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        return true
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {

@@ -55,6 +55,9 @@ class TerminalRenderer {
 
     @MainActor
     func draw(in context: CGContext, rect: CGRect) {
+        print("🖼️ Renderer.draw() - terminal size: \(terminalState.size)")
+        print("🖼️ Cursor at: \(terminalState.cursorPosition)")
+
         // Set rendering quality
         context.setAllowsAntialiasing(true)
         context.setShouldAntialias(true)
@@ -65,23 +68,36 @@ class TerminalRenderer {
         let startRow = max(0, Int(rect.minY / cellSize.height))
         let endRow = min(terminalState.size.rows - 1, Int(rect.maxY / cellSize.height) + 1)
 
+        print("🖼️ Drawing rows \(startRow) to \(endRow)")
+
         // Draw each visible row
+        var totalCells = 0
         for row in startRow...endRow {
-            drawRow(row, in: context)
+            let cellsInRow = drawRow(row, in: context)
+            totalCells += cellsInRow
         }
+
+        print("🖼️ Drew \(totalCells) cells total")
 
         // Draw cursor
         if terminalState.cursorVisible {
+            print("🖼️ Drawing cursor at \(terminalState.cursorPosition)")
             drawCursor(in: context)
         }
     }
 
     @MainActor
-    private func drawRow(_ row: Int, in context: CGContext) {
+    private func drawRow(_ row: Int, in context: CGContext) -> Int {
         let y = CGFloat(row) * cellSize.height
+        var drawnCells = 0
 
         for col in 0..<terminalState.size.cols {
             guard let cell = terminalState.cell(at: row, col: col) else { continue }
+
+            // Debug first few cells of first row
+            if row == 0 && col < 5 {
+                print("🖼️ Row \(row) Col \(col): '\(cell.character)' fg:\(cell.foregroundColor) bg:\(cell.backgroundColor)")
+            }
 
             let x = CGFloat(col) * cellSize.width
             let cellRect = CGRect(x: x, y: y, width: cellSize.width, height: cellSize.height)
@@ -126,10 +142,10 @@ class TerminalRenderer {
             }
 
             if cell.reverse {
-                swap(&fgColor, &context)
                 // Swap foreground and background colors
+                let bgColor = cell.backgroundColor.toNSColor(isForeground: false)
                 let temp = fgColor
-                fgColor = cell.backgroundColor.toNSColor(isForeground: false)
+                fgColor = bgColor
                 context.setFillColor(temp.cgColor)
                 context.fill(cellRect)
             }
@@ -162,7 +178,11 @@ class TerminalRenderer {
                 context.addLine(to: CGPoint(x: x + cellSize.width, y: strikeY))
                 context.strokePath()
             }
+
+            drawnCells += 1
         }
+
+        return drawnCells
     }
 
     private func drawCharacter(

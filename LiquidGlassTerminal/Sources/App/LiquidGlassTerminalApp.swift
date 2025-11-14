@@ -61,6 +61,15 @@ struct LiquidGlassTerminalApp: App {
 /// Application delegate for app-wide configuration
 class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        print("🚀 App launched, activating...")
+
+        // CRITICAL: Activate the app to receive keyboard events
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+
+        print("🚀 Activation policy: \(NSApp.activationPolicy().rawValue)")
+        print("🚀 Is active: \(NSApp.isActive)")
+
         // Configure window appearance
         configureAppearance()
     }
@@ -73,12 +82,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    @MainActor
     private func configureAppearance() {
         // Ensure transparency is enabled
         if let window = NSApp.windows.first {
             window.backgroundColor = .clear
             window.isOpaque = false
             window.titlebarAppearsTransparent = true
+
+            // Force window to be key
+            window.makeKeyAndOrderFront(nil)
+
+            print("🚀 Window is key: \(window.isKeyWindow)")
+            print("🚀 Window is main: \(window.isMainWindow)")
         }
     }
 }

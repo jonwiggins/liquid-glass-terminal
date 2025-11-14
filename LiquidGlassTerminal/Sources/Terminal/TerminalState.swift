@@ -21,10 +21,10 @@ class TerminalState: ObservableObject {
     // MARK: - Buffer
 
     /// Main screen buffer
-    private(set) var buffer: [[TerminalCell]]
+    var buffer: [[TerminalCell]]
 
     /// Scrollback buffer (lines that have scrolled off screen)
-    private(set) var scrollback: [[TerminalCell]] = []
+    var scrollback: [[TerminalCell]] = []
 
     /// Maximum scrollback lines
     var maxScrollback: Int = 10000
@@ -90,6 +90,8 @@ class TerminalState: ObservableObject {
 
     /// Write a character at current cursor position
     func writeChar(_ char: Character) {
+        print("✍️ writeChar '\(char)' at row:\(cursorPosition.row) col:\(cursorPosition.col)")
+
         // Handle wide characters
         let isWide = char.isWideCharacter
 
@@ -112,6 +114,7 @@ class TerminalState: ObservableObject {
         if cursorPosition.row < size.rows && cursorPosition.col < size.cols {
             buffer[cursorPosition.row][cursorPosition.col] = cell
             markDirty(row: cursorPosition.row)
+            print("✍️ Wrote '\(char)' to buffer[\(cursorPosition.row)][\(cursorPosition.col)]")
 
             // Mark next cell as continuation if wide
             if isWide && cursorPosition.col + 1 < size.cols {

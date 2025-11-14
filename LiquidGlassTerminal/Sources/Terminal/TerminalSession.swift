@@ -51,9 +51,12 @@ class TerminalSession: ObservableObject {
         pty.onDataReceived = { [weak self] data in
             guard let self = self else { return }
 
+            print("📨 onDataReceived: \(data.count) bytes")
             Task { @MainActor in
+                print("📨 Parsing data on MainActor")
                 // Parse and update terminal state
                 self.parser.parse(data, terminal: self.terminalState)
+                print("📨 Parse complete, state should be updated")
             }
         }
 
@@ -94,7 +97,13 @@ class TerminalSession: ObservableObject {
     // MARK: - Input
 
     func sendInput(_ string: String) async {
-        guard isRunning else { return }
+        print("📤 sendInput called with: '\(string)'")
+        print("📤 isRunning: \(isRunning)")
+
+        guard isRunning else {
+            print("📤 Not running, ignoring input")
+            return
+        }
 
         do {
             // Handle special keys
@@ -103,9 +112,11 @@ class TerminalSession: ObservableObject {
             // Convert newline to carriage return for terminals
             output = output.replacingOccurrences(of: "\n", with: "\r")
 
+            print("📤 Writing to PTY: '\(output)'")
             try pty.write(output)
+            print("📤 Write successful")
         } catch {
-            print("Failed to send input: \(error)")
+            print("📤 Failed to send input: \(error)")
         }
     }
 
@@ -149,6 +160,7 @@ class TerminalSession: ObservableObject {
     // MARK: - Cleanup
 
     deinit {
-        stop()
+        // Note: Can't call async methods or main actor methods in deinit
+        // The PTYController will clean up itself in its own deinit
     }
 }
