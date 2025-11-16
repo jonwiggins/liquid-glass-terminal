@@ -7,7 +7,7 @@ A modern macOS terminal emulator featuring a stunning liquid glass aesthetic wit
 ![Swift](https://img.shields.io/badge/swift-6.0-orange.svg)
 ![Status](https://img.shields.io/badge/status-v0.1--alpha-yellow.svg)
 
-<img width="937" height="489" alt="image" src="https://github.com/user-attachments/assets/63a90386-fc29-40f5-9c74-a7fa83e81489" />
+<img width="1106" height="698" alt="image" src="https://github.com/user-attachments/assets/0a35a0ae-81b0-4255-8a0f-871f07f6098b" />
 
 
 ## ✨ Features
