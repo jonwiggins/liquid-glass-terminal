@@ -266,6 +266,12 @@ class TerminalState: ObservableObject {
                 buffer[row][col] = .empty()
             }
 
+            // Special case: if erasing from column 0, check if previous line is zsh's % marker
+            // and erase it too. This handles the wrapped line case.
+            if cursorPosition.col == 0 && row > 0 {
+                erasePreviousLineIfZshMarker(currentRow: row)
+            }
+
         case 1: // Erase from start of line to cursor
             for col in 0...min(cursorPosition.col, size.cols - 1) {
                 buffer[row][col] = .empty()
@@ -279,6 +285,33 @@ class TerminalState: ObservableObject {
         }
 
         markDirty(row: row)
+    }
+
+    private func erasePreviousLineIfZshMarker(currentRow: Int) {
+        guard currentRow > 0 else { return }
+        let prevRow = currentRow - 1
+
+        // Check if previous line starts with '%' and rest is spaces
+        // This is zsh's partial line indicator pattern
+        guard prevRow < size.rows && prevRow >= 0 else { return }
+
+        let line = buffer[prevRow]
+        guard line.count > 0 else { return }
+
+        // First character should be '%'
+        guard line[0].character == "%" else { return }
+
+        // Rest should be all spaces or empty
+        for col in 1..<size.cols {
+            let char = line[col].character
+            if char != " " {
+                return  // Not all spaces, don't erase
+            }
+        }
+
+        // This looks like zsh's marker, erase it
+        buffer[prevRow] = Array(repeating: .empty(), count: size.cols)
+        markDirty(row: prevRow)
     }
 
     // MARK: - Cursor Save/Restore

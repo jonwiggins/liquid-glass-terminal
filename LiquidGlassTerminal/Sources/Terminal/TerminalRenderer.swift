@@ -15,7 +15,7 @@ class TerminalRenderer {
 
     private let terminalState: TerminalState
     private var fontAtlas: FontAtlas
-    private var cellSize: CGSize
+    var cellSize: CGSize
 
     // MARK: - Initialization
 
@@ -54,7 +54,7 @@ class TerminalRenderer {
     // MARK: - Rendering
 
     @MainActor
-    func draw(in context: CGContext, rect: CGRect) {
+    func draw(in context: CGContext, rect: CGRect, selection: TerminalSelection? = nil) {
         print("🖼️ Renderer.draw() - terminal size: \(terminalState.size)")
         print("🖼️ Cursor at: \(terminalState.cursorPosition)")
 
@@ -69,6 +69,11 @@ class TerminalRenderer {
         let endRow = min(terminalState.size.rows - 1, Int(rect.maxY / cellSize.height) + 1)
 
         print("🖼️ Drawing rows \(startRow) to \(endRow)")
+
+        // Draw selection background first
+        if let selection = selection {
+            drawSelection(selection, in: context)
+        }
 
         // Draw each visible row
         var totalCells = 0
@@ -242,6 +247,48 @@ class TerminalRenderer {
         context.fill(cursorRect.insetBy(dx: 0.5, dy: 0.5))
 
         context.restoreGState()
+    }
+
+    @MainActor
+    private func drawSelection(_ selection: TerminalSelection, in context: CGContext) {
+        let normalized = selection.normalized()
+
+        // Selection color with transparency
+        context.setFillColor(NSColor.selectedTextBackgroundColor.withAlphaComponent(0.3).cgColor)
+
+        // Draw selection for each row
+        for row in normalized.start.row...normalized.end.row {
+            guard row >= 0 && row < terminalState.size.rows else { continue }
+
+            let startCol: Int
+            let endCol: Int
+
+            if row == normalized.start.row && row == normalized.end.row {
+                // Selection starts and ends on same row
+                startCol = normalized.start.col
+                endCol = normalized.end.col
+            } else if row == normalized.start.row {
+                // First row of multi-row selection
+                startCol = normalized.start.col
+                endCol = terminalState.size.cols - 1
+            } else if row == normalized.end.row {
+                // Last row of multi-row selection
+                startCol = 0
+                endCol = normalized.end.col
+            } else {
+                // Middle row of multi-row selection
+                startCol = 0
+                endCol = terminalState.size.cols - 1
+            }
+
+            let x = CGFloat(startCol) * cellSize.width
+            let y = CGFloat(row) * cellSize.height
+            let width = CGFloat(endCol - startCol + 1) * cellSize.width
+            let height = cellSize.height
+
+            let selectionRect = CGRect(x: x, y: y, width: width, height: height)
+            context.fill(selectionRect)
+        }
     }
 }
 

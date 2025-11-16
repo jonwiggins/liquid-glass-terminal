@@ -63,6 +63,11 @@ class TerminalNSView: NSView {
     private var trackingArea: NSTrackingArea?
     private var cancellables = Set<AnyCancellable>()
 
+    // Selection state
+    private var selection: TerminalSelection?
+    private var selectionStart: CursorPosition?
+    private var isSelecting: Bool = false
+
     // MARK: - Initialization
 
     init(session: TerminalSession) {
@@ -186,7 +191,7 @@ class TerminalNSView: NSView {
 
         // Render terminal - must be synchronous in draw method
         MainActor.assumeIsolated {
-            renderer.draw(in: context, rect: dirtyRect)
+            renderer.draw(in: context, rect: dirtyRect, selection: selection)
         }
         print("🎨 draw() complete")
     }
@@ -197,20 +202,59 @@ class TerminalNSView: NSView {
 
     // MARK: - Mouse Events
 
+    private func terminalPosition(for point: NSPoint) -> CursorPosition? {
+        let cellSize = renderer.cellSize
+        let col = Int(point.x / cellSize.width)
+        let row = Int(point.y / cellSize.height)
+
+        guard session.terminalState.size.contains(row: row, col: col) else {
+            return nil
+        }
+
+        return CursorPosition(row: row, col: col)
+    }
+
     override func mouseDown(with event: NSEvent) {
         print("🖱️ mouseDown - making first responder")
         window?.makeKeyAndOrderFront(nil)
         let success = window?.makeFirstResponder(self)
         print("🖱️ makeFirstResponder success: \(success ?? false)")
-        // TODO: Implement selection start
+
+        // Start selection
+        let location = convert(event.locationInWindow, from: nil)
+        if let pos = terminalPosition(for: location) {
+            selectionStart = pos
+            selection = TerminalSelection(start: pos, end: pos)
+            isSelecting = true
+            needsDisplay = true
+        }
     }
 
     override func mouseDragged(with event: NSEvent) {
-        // TODO: Implement selection drag
+        guard isSelecting, let start = selectionStart else { return }
+
+        let location = convert(event.locationInWindow, from: nil)
+        if let pos = terminalPosition(for: location) {
+            selection = TerminalSelection(start: start, end: pos)
+            needsDisplay = true
+        }
     }
 
     override func mouseUp(with event: NSEvent) {
-        // TODO: Implement selection end
+        if isSelecting {
+            isSelecting = false
+
+            // Copy selection to pasteboard if there's a valid selection
+            if let sel = selection, sel.start != sel.end {
+                let text = session.getSelectedText(selection: sel)
+                if !text.isEmpty {
+                    let pasteboard = NSPasteboard.general
+                    pasteboard.clearContents()
+                    pasteboard.setString(text, forType: .string)
+                    print("📋 Copied to clipboard: \(text.count) characters")
+                }
+            }
+        }
     }
 
     // MARK: - Keyboard Events

@@ -20,9 +20,10 @@ struct TerminalWindowView: View {
         ZStack {
             // Glass background layer
             GlassBackgroundView(
-                material: .hudWindow,
+                material: .underWindowBackground,
                 blendingMode: .behindWindow
             )
+            .opacity(0.75)
             .ignoresSafeArea()
 
             // Terminal content layer

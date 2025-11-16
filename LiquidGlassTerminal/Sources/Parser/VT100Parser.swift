@@ -40,6 +40,9 @@ class VT100Parser {
     // OSC/DCS termination state
     private var awaitingStringTerminator: Bool = false
 
+    // Track if we've handled the initial linefeed from shell startup
+    private var firstLinefeedSkipped: Bool = false
+
     /// Parse data and update terminal state
     func parse(_ data: Data, terminal: TerminalState) {
         for byte in data {
@@ -97,6 +100,12 @@ class VT100Parser {
             terminal.tab()
 
         case 0x0A, 0x0B, 0x0C:  // LF, VT, FF - Line Feed
+            // Skip the very first linefeed from shell initialization if still on row 0
+            if !firstLinefeedSkipped && terminal.cursorPosition.row == 0 {
+                firstLinefeedSkipped = true
+                // Skip this linefeed - it's the initial shell output
+                break
+            }
             terminal.lineFeed()
 
         case 0x0D:  // CR - Carriage Return
